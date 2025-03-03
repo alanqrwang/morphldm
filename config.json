@@ -1,0 +1,98 @@
+{
+    "run_name": "__auto__condtemplateinput_t1_all_grad5_kl1e-7_balancedage_t1_finalnone_tempch1_final1x1templategen_adv0_005_displace1_minmaxage",
+    "dataset_type":"T1All",
+    "metadata_dim": 2,
+    "channel": 0,
+    "spacing": [1.0, 1.0, 1.0],
+    "spatial_dims": 3,
+    "image_channels": 1,
+    "latent_channels": 8,
+    "latent_shape": [40, 48, 48],
+    "train_steps_per_epoch": 10000,
+    "val_steps_per_epoch": 1,
+    "train_autoencoder": false,
+    "img_size": [160, 192, 176],
+    "num_workers": 2,
+    "age_normalization": "min-max",
+    "sample_balanced_age_for_training": true,
+    "use_amp": true,
+    "autoencoder_ckpt_name": "best",
+    "resume_ckpt": true,
+    "debug_one_sample": false,
+    "debug_mode": false,
+    "autoencoder_def": {
+        "_target_": "generative.networks.nets.AutoencoderKLConditionalTemplateRegistrationInput",
+        "spatial_dims": "@spatial_dims",
+        "in_channels": 2,
+        "out_channels": 3,
+        "latent_channels": "@latent_channels",
+        "num_channels": [
+            64,
+            128,
+            256
+        ],
+        "num_res_blocks": 2,
+        "norm_num_groups": 32,
+        "norm_eps": 1e-06,
+        "attention_levels": [
+            false,
+            false,
+            false
+        ],
+        "with_encoder_nonlocal_attn": false,
+        "with_decoder_nonlocal_attn": false,
+        "final_conv": null,
+        "diffeomorphic": false,
+        "template_shape": [1, 160, 192, 176],
+        "template_generator_type": "unetdecoderfinal1x1",
+        "metadata_dim": "@metadata_dim"
+    },
+    "autoencoder_train": {
+        "batch_size": 1,
+        "random_crop":false,
+        "lr": 1e-5,
+        "perceptual_weight": 0.0,
+        "kl_weight": 1e-7,
+        "warm_up_n_epochs": 0,
+        "adv_weight": 0.005,
+        "quantization_weight": 0.0,
+        "displace_weight": 1,
+        "recon_loss": "l1",
+        "n_epochs": 500,
+        "val_interval": 1,
+        "grad_weight": 5,
+        "diffeomorphic": false
+    },
+    "diffusion_def": {
+        "_target_": "generative.networks.nets.DiffusionModelUNet",
+        "spatial_dims": "@spatial_dims",
+        "in_channels": "@latent_channels",
+        "out_channels": "@latent_channels",
+        "num_channels":[384, 512, 512],
+        "attention_levels":[false, true, true],
+        "num_head_channels":[0, 64, 64],
+        "num_res_blocks": 2,
+        "with_conditioning": true,
+        "cross_attention_dim": 2
+        
+    },
+    "diffusion_train": {
+        "batch_size": 1,
+        "lr": 25e-7,
+        "lr_scheduler_milestones": [50, 1000],
+        "n_epochs": 5000,
+        "val_interval": 1,
+        "conditioning_file":"/simurgh/u/fangruih/monai-tutorials/generative/3d_ldm/conditioning/fmriresults01.txt",
+        "expand_token_times": 100,
+        "gradient_clipping": true,
+        "max_norm": 1.0,
+        "save_every_epoch": true
+    },
+    "NoiseScheduler": {
+        "schedule": "scaled_linear_beta",
+        "num_train_timesteps": 1000,
+        "beta_start": 0.0015,
+        "beta_end": 0.0195,
+        "clip_sample": false
+    }
+}

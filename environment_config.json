@@ -1,0 +1,4 @@
+{
+    "wandb_project_name":"morphldm",
+    "base_model_dir": "./"
+}
