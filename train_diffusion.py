@@ -4,27 +4,37 @@ import logging
 import os
 import sys
 from pprint import pprint
-
 import torch
 import torch.nn.functional as F
-from generative.inferers import LatentDiffusionInferer
 from generative.networks.schedulers import DDPMScheduler
 from monai.utils import first, set_determinism
 from monai.bundle import ConfigParser
 from torch.amp import GradScaler
-
-# from torch.nn.parallel import DistributedDataParallel as DDP
-
-from stai_utils.datasets.dataset_utils import T1All
-from stai_utils.plotting.visualize_image import (
-    visualize_one_slice_in_3d_image,
-    visualize_one_slice_in_3d_image_greyscale,
-    plot_latent,
-)
-
 import wandb
 from wandb import Image
 
+from stai_utils.datasets.dataset_utils import T1All
+from morphldm.inferer import LatentDiffusionInferer
+
+def visualize_one_slice_in_3d_image(image, axis: int = 2):
+    """
+    Prepare a 2D image slice from a 3D image for visualization.
+    Args:
+        image: image numpy array, sized (H, W, D)
+    """
+    image = convert_to_numpy(image)
+    # draw image
+    center = image.shape[axis] // 2
+    if axis == 0:
+        draw_img = normalize_image_to_uint8(image[center, :, :])
+    elif axis == 1:
+        draw_img = normalize_image_to_uint8(image[:, center, :])
+    elif axis == 2:
+        draw_img = normalize_image_to_uint8(image[:, :, center])
+    else:
+        raise ValueError("axis should be in [0,1,2]")
+    draw_img = np.stack([draw_img, draw_img, draw_img], axis=-1)
+    return draw_img
 
 def define_instance(args, instance_def_key):
     parser = ConfigParser(vars(args))
@@ -79,8 +89,8 @@ def train_one_epoch(train_loader, unet, autoencoder, inferer, optimizer, noise_s
 
             with torch.no_grad():
                 if args.autoencoder_def["_target_"] in [
-                    "generative.networks.nets.AutoencoderKLTemplateRegistrationInput",
-                    "generative.networks.nets.AutoencoderKLConditionalTemplateRegistrationInput",
+                    "morphldm.autoencoderkl.AutoencoderKLTemplateRegistration",
+                    "morphldm.autoencoderkl.AutoencoderKLConditionalTemplateRegistration",
                 ]:
                     template = autoencoder.get_template_image(condition).detach()
                 else:
@@ -109,12 +119,6 @@ def train_one_epoch(train_loader, unet, autoencoder, inferer, optimizer, noise_s
                 optimizer.step()
 
     train_recon_epoch_loss = train_recon_epoch_loss / (step + 1)
-
-    if args.debug_mode:
-        print("Noise")
-        plot_latent(noise.cpu().detach().numpy())
-        print("Noise prediction")
-        plot_latent(noise_pred.cpu().detach().numpy())
     return train_recon_epoch_loss
 
 
@@ -142,8 +146,8 @@ def eval_one_epoch(val_loader, unet, autoencoder, inferer, noise_shape, args):
                 ).long()
 
                 if args.autoencoder_def["_target_"] in [
-                    "generative.networks.nets.AutoencoderKLTemplateRegistrationInput",
-                    "generative.networks.nets.AutoencoderKLConditionalTemplateRegistrationInput",
+                    "morphldm.autoencoderkl.AutoencoderKLTemplateRegistration",
+                    "morphldm.autoencoderkl.AutoencoderKLConditionalTemplateRegistration",
                 ]:
                     template = autoencoder.get_template_image(condition)
                 else:
@@ -169,12 +173,12 @@ def synthesize_example_image(unet, autoencoder, inferer, scheduler, noise_shape,
     # Generate random noise
     noise = torch.randn(noise_shape).to(args.device)
 
-    age = torch.tensor([30.0])[None].float().to(args.device)
+    age = torch.tensor([10.0])[None].float().to(args.device)
     sex = torch.tensor([0.0])[None].float().to(args.device)
     condition = torch.cat([age, sex], dim=-1).unsqueeze(1)  # for seq_len
     if args.autoencoder_def["_target_"] in [
-        "generative.networks.nets.AutoencoderKLTemplateRegistrationInput",
-        "generative.networks.nets.AutoencoderKLConditionalTemplateRegistrationInput",
+        "morphldm.autoencoderkl.AutoencoderKLTemplateRegistration",
+        "morphldm.autoencoderkl.AutoencoderKLConditionalTemplateRegistration",
     ]:
         template = autoencoder.get_template_image(condition[:, 0])
     else:
@@ -200,7 +204,7 @@ def recon_example_image(x, autoencoder, template=None):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="PyTorch Latent Diffusion Model Training")
+    parser = argparse.ArgumentParser(description="MorphLDM Diffusion Training")
     parser.add_argument(
         "-e",
         "--environment-file",
@@ -233,7 +237,7 @@ def main():
     pprint(vars(args))
 
     wandb.init(
-        project=args.wandb_project_name_diffusion, name=args.run_name.replace("__auto__", "__diff__"), config=args
+        project=args.wandb_project_name, name=args.run_name.replace("__auto__", "__diff__"), config=args
     )
     # Save the current training script to the wandb run
     wandb.save(__file__)
@@ -274,14 +278,10 @@ def main():
             check_age = check_data["age"][None].float().to(args.device)
             check_sex = check_data["sex"][None].float().to(args.device)
             if args.autoencoder_def["_target_"] in [
-                "generative.networks.nets.AutoencoderKLTemplateRegistrationInput",
-                "generative.networks.nets.AutoencoderKLConditionalTemplateRegistrationInput",
+                "morphldm.autoencoderkl.AutoencoderKLTemplateRegistration",
+                "morphldm.autoencoderkl.AutoencoderKLConditionalTemplateRegistration",
             ]:
-                if args.dataset_type == "BWMSherlock":
-                    check_modality = check_data["modality"][None].float().to(args.device)
-                    check_metadata = torch.cat([check_age, check_sex, check_modality], dim=-1)
-                else:
-                    check_metadata = torch.cat([check_age, check_sex], dim=-1)
+                check_metadata = torch.cat([check_age, check_sex], dim=-1)
                 check_template = autoencoder.get_template_image(check_metadata)
                 z = autoencoder.encode_stage_2_inputs(check_image, check_template)
                 recon_images = recon_example_image(check_image, autoencoder, check_template)
@@ -289,38 +289,15 @@ def main():
                 z = autoencoder.encode_stage_2_inputs(check_image)
                 recon_images = recon_example_image(check_image, autoencoder)
             print(f"Latent feature shape {z.shape}")
-            for axis in range(3):
-                train_img = visualize_one_slice_in_3d_image(check_data["image"][0, 0, ...], axis)
-                recon_img = visualize_one_slice_in_3d_image(recon_images[0, 0, ...], axis)
-
-                wandb.log(
-                    {
-                        f"val/image/gt_axis_{axis}": Image(train_img),
-                        f"val/image/recon_axis_{axis}": Image(recon_img),
-                    },
-                    step=1,
-                )
-                print(f"Scaling factor set to {1/torch.std(z)}")
 
     scale_factor = 1 / torch.std(z)
     print(f"scale_factor: {scale_factor}")
-    # if ddp_bool:
-    #     dist.barrier()
-    #     dist.all_reduce(scale_factor, op=torch.distributed.ReduceOp.AVG)
-    # print(f"Rank {rank}: final scale_factor -> {scale_factor}")
     noise_shape = [check_data["image"].shape[0]] + [args.latent_channels, 40, 48, 48]  # list(z.shape[1:])
 
     # Define Diffusion Model
     unet = define_instance(args, "diffusion_def").to(args.device)
 
     trained_diffusion_path_best = os.path.join(args.diffusion_dir, "diffusion_unet_best.pt")
-
-    if args.resume_ckpt:
-        try:
-            unet.load_state_dict(torch.load(trained_diffusion_path_best, map_location="cpu"))
-            print(f"Load trained diffusion model from", trained_diffusion_path_best)
-        except:
-            print(f"Train diffusion model from scratch.")
 
     if args.NoiseScheduler["schedule"] == "cosine":
         scheduler = DDPMScheduler(
@@ -336,11 +313,6 @@ def main():
             beta_end=args.NoiseScheduler["beta_end"],
             clip_sample=args.NoiseScheduler["clip_sample"],
         )
-    # num_params = count_parameters(unet)
-    # print(f"The model has {num_params} trainable parameters.")
-    # if ddp_bool:
-    #     autoencoder = DDP(autoencoder, device_ids=[device], output_device=rank, find_unused_parameters=True)
-    #     unet = DDP(unet, device_ids=[device], output_device=rank, find_unused_parameters=True)
 
     # We define the inferer using the scale factor:
     inferer = LatentDiffusionInferer(
@@ -434,46 +406,6 @@ def main():
                     },
                     step=epoch,
                 )
-
-            if args.autoencoder_def["_target_"] in [
-                "generative.networks.nets.AutoencoderKLConditionalTemplateRegistration",
-                "generative.networks.nets.AutoencoderKLConditionalTemplateRegistrationInput",
-            ]:
-                for age_viz in [0, 20, 40, 60, 80, 100]:
-                    age = torch.tensor(age_viz)[None].float().to(args.device)
-                    sex = torch.tensor(0.0)[None].float().to(args.device)
-                    condition = torch.cat([age, sex], dim=-1)
-                    images_moving = autoencoder.get_template_image(condition)
-                    for axis in range(3):
-                        train_img_moving = visualize_one_slice_in_3d_image_greyscale(
-                            images_moving[0, 0, ...], axis
-                        )  # .transpose([2, 1, 0])
-                        wandb.log(
-                            {
-                                f"val/image/age_{age_viz}_img_moving_axis_{axis}": Image(train_img_moving),
-                            },
-                            step=epoch,
-                        )
-
-                if args.dataset_type == "BWMSherlock":
-                    for modality_viz in [0, 1]:
-                        age = torch.tensor(30.0)[None].float().to(args.device)
-                        sex = torch.tensor(0.0)[None].float().to(args.device)
-                        modality = torch.tensor(modality_viz)[None].float().to(args.device)
-                        condition = torch.cat([age, sex, modality], dim=-1)
-                        images_moving = autoencoder.get_template_image(condition)
-                        for axis in range(3):
-                            train_img_moving = visualize_one_slice_in_3d_image_greyscale(
-                                images_moving[0, 0, ...], axis
-                            )  # .transpose([2, 1, 0])
-                            wandb.log(
-                                {
-                                    f"val/image/mod_{modality_viz}_img_moving_axis_{axis}": Image(train_img_moving),
-                                },
-                                step=epoch,
-                            )
-
-            del synthetic_images
 
 
 if __name__ == "__main__":

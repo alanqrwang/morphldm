@@ -5,33 +5,19 @@ import os
 import sys
 from pprint import pprint
 from collections import defaultdict
-
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.nn import L1Loss, MSELoss
-
-# from torch.nn.parallel import DistributedDataParallel as DDP
+import wandb
 from torchvision.utils import make_grid
-
-
 from monai.utils import set_determinism
 from monai.bundle import ConfigParser
 from generative.losses import PatchAdversarialLoss, PerceptualLoss
 from generative.networks.nets import PatchDiscriminator
 
+import morphldm.registration_layers as reg_layers
 from stai_utils.datasets.dataset_utils import T1All
-from stai_utils.datasets.bwm_sherlock import BWMSherlock
-from stai_utils.plotting.visualize_image import (
-    visualize_one_slice_in_3d_image,
-    visualize_one_slice_in_3d_image_greyscale,
-)
-
-import wandb
-from wandb import Image
-
-import generative.networks.layers.registration_layers as reg_layers
-from scripts.script_utils import summary
 
 
 def define_instance(args, instance_def_key):
@@ -48,93 +34,9 @@ def KL_loss(z_mu, z_sigma):
     return torch.sum(kl_loss) / kl_loss.shape[0]
 
 
-def get_slice_from_vol(volume_3d: np.ndarray, axis: int) -> np.ndarray:
-    """
-    Returns the middle slice of a 3D volume along the specified axis.
-
-    volume_3d: a NumPy array of shape (D, H, W) or (some 3D shape).
-    axis: which axis to slice along (0, 1, or 2).
-    """
-    idx = volume_3d.shape[axis] // 2
-    if axis == 0:
-        slice_2d = volume_3d[idx, :, :]
-    elif axis == 1:
-        slice_2d = volume_3d[:, idx, :]
-    else:  # axis == 2
-        slice_2d = volume_3d[:, :, idx]
-    return slice_2d
-
-
-def create_alignment_grid(
-    moving_image: torch.Tensor, fixed_image: torch.Tensor, aligned_image: torch.Tensor, edge_crop: int = 0
-) -> torch.Tensor:
-    """
-    Creates a single 3x3 grid:
-      - 3 rows = axis in [0, 1, 2]
-      - 3 columns = [moving, fixed, aligned]
-
-    **Handles** differently sized slices by zero-padding them
-    to the largest slice shape found among all 9 slices.
-
-    Args:
-        moving_image:   shape (B, C, D, H, W)
-        fixed_image:    shape (B, C, D, H, W)
-        aligned_image:  shape (B, C, D, H, W)
-
-    Returns:
-        final_grid: a torch.Tensor of shape (1, H_total, W_total)
-                    suitable for passing to wandb.Image(final_grid).
-    """
-
-    # Convert to NumPy (take the first [batch, channel])
-    moving_np = moving_image[0, 0, ...].cpu().detach().numpy()
-    fixed_np = fixed_image[0, 0, ...].cpu().detach().numpy()
-    aligned_np = aligned_image[0, 0, ...].cpu().detach().numpy()
-
-    volumes = [moving_np, fixed_np, aligned_np]
-
-    # 1) Collect all 9 slices
-    #    (For each axis in [0,1,2], slice each volume.)
-    slices_np = []
-    for axis in range(3):
-        for vol in volumes:
-            slice_2d = get_slice_from_vol(vol, axis)
-            slices_np.append(slice_2d[edge_crop:-edge_crop, edge_crop:-edge_crop])  # shape: (H, W) but might vary
-
-    # 2) Find the maximum height and width among the 9 slices
-    max_h = max(s.shape[0] for s in slices_np)
-    max_w = max(s.shape[1] for s in slices_np)
-
-    # 3) Pad each slice to (max_h, max_w)
-    slices_tensors = []
-    for s in slices_np:
-        h, w = s.shape
-        # Create a new padded array of shape (max_h, max_w)
-        padded = np.zeros((max_h, max_w), dtype=s.dtype)
-        padded[:h, :w] = s  # top-left corner
-        # Convert to torch tensor with shape (1, max_h, max_w) for grayscale
-        slice_t = torch.from_numpy(padded).unsqueeze(0).float()
-        slices_tensors.append(slice_t)
-
-    # 4) Make a single 3x3 grid using make_grid
-    #    We have 9 slices total -> nrow=3 => 3 columns => 3 rows
-    final_grid = make_grid(slices_tensors, nrow=3, padding=2, pad_value=1.0)  # white for padding between images
-    return final_grid
-
-
 def get_data(args):
     if args.dataset_type == "T1All":
         dataset = T1All(
-            args.img_size,
-            args.num_workers,
-            age_normalization=args.age_normalization,
-            rank=0,
-            world_size=1,
-            spacing=args.spacing,
-            sample_balanced_age_for_training=args.sample_balanced_age_for_training,
-        )
-    elif args.dataset_type == "BWMSherlock":
-        dataset = BWMSherlock(
             args.img_size,
             args.num_workers,
             age_normalization=args.age_normalization,
@@ -154,7 +56,7 @@ def get_data(args):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="PyTorch VAE-GAN training")
+    parser = argparse.ArgumentParser(description="MorphLDM autoencoder training")
     parser.add_argument(
         "-e",
         "--environment-file",
@@ -179,42 +81,6 @@ def parse_args():
         setattr(args, k, v)
 
     return args
-
-
-def load_state_dict_partial(model, state_dict_path):
-    """
-    Loads a PyTorch state dict into a model, ignoring keys with size mismatches.
-
-    Args:
-        model (torch.nn.Module): The model to load the state dict into.
-        state_dict_path (str): Path to the saved state dict file (.pth or .pt).
-
-    Returns:
-        None
-    """
-    print("Loading state dict from:", state_dict_path)
-    # Load the state dict from the file
-    state_dict = torch.load(state_dict_path, map_location=torch.device("cpu"))
-
-    # Get the model's current state dict
-    model_state_dict = model.state_dict()
-
-    # Filter keys with size mismatches
-    matched_state_dict = {}
-    for key, value in state_dict.items():
-        if key in model_state_dict and value.size() == model_state_dict[key].size():
-            matched_state_dict[key] = value
-        else:
-            print(
-                f"Skipping key '{key}' due to size mismatch: {value.size()} vs {model_state_dict[key].size() if key in model_state_dict else 'Key not found in model'}"
-            )
-
-    # Load the matched keys into the model
-    model_state_dict.update(matched_state_dict)
-    model.load_state_dict(model_state_dict)
-
-    print("State dict loaded successfully (mismatched keys were skipped).")
-    return model
 
 
 def aggregate_dicts(dicts):
@@ -245,19 +111,15 @@ def train_one_epoch(
         age = batch["age"][None].float().to(args.device)
         sex = batch["sex"][None].float().to(args.device)
         condition = torch.cat([age, sex], dim=-1)
-        if args.dataset_type == "BWMSherlock":
-            modality = batch["modality"][None].float().to(args.device)
-            condition = torch.cat([age, sex, modality], dim=-1)
-        else:
-            condition = torch.cat([age, sex], dim=-1)
+        condition = torch.cat([age, sex], dim=-1)
         del batch
         print(condition)
 
         # train Generator part
         optimizer_g.zero_grad(set_to_none=True)
         if args.autoencoder_def["_target_"] in [
-            "generative.networks.nets.AutoencoderKLTemplateRegistrationInput",
-            "generative.networks.nets.AutoencoderKLConditionalTemplateRegistrationInput",
+            "morphldm.autoencoderkl.AutoencoderKLTemplateRegistration",
+            "morphldm.autoencoderkl.AutoencoderKLConditionalTemplateRegistration",
         ]:
             reconstruction, z_mu, z_sigma, z, displacement_field = autoencoder(images, condition)
             kl_loss = KL_loss(z_mu, z_sigma)
@@ -344,22 +206,15 @@ def eval_one_epoch(val_loader, autoencoder, intensity_loss, loss_perceptual, arg
         images = batch["image"].to(args.device).as_tensor()
         age = batch["age"][None].float().to(args.device)
         sex = batch["sex"][None].float().to(args.device)
-        if args.dataset_type == "BWMSherlock":
-            modality = batch["modality"][None].float().to(args.device)
-            condition = torch.cat([age, sex, modality], dim=-1)
-        else:
-            condition = torch.cat([age, sex], dim=-1)
-        print(condition)
+        condition = torch.cat([age, sex], dim=-1)
 
         if step == args.val_steps_per_epoch:
             break
 
         with torch.no_grad():
             if args.autoencoder_def["_target_"] in [
-                "generative.networks.nets.AutoencoderKLTemplateRegistration",
-                "generative.networks.nets.AutoencoderKLTemplateRegistrationInput",
-                "generative.networks.nets.AutoencoderKLConditionalTemplateRegistration",
-                "generative.networks.nets.AutoencoderKLConditionalTemplateRegistrationInput",
+                "morphldm.autoencoderkl.AutoencoderKLTemplateRegistration",
+                "morphldm.autoencoderkl.AutoencoderKLConditionalTemplateRegistration",
             ]:
                 reconstruction, z_mu, z_sigma, z, displacement_field = autoencoder(images, condition)
                 kl_loss = KL_loss(z_mu, z_sigma)
@@ -375,10 +230,6 @@ def eval_one_epoch(val_loader, autoencoder, intensity_loss, loss_perceptual, arg
                     + args.autoencoder_train["displace_weight"] * displace_loss
                     + args.autoencoder_train["grad_weight"] * grad_loss
                 )
-            elif args.autoencoder_def["_target_"] == "generative.networks.nets.VQVAE":
-                reconstruction, quantization_loss = autoencoder(images)
-                recons_loss = intensity_loss(reconstruction, images)
-                loss_g = recons_loss + quantization_loss
             else:
                 reconstruction, z_mu, z_sigma, z = autoencoder(images)
                 recons_loss = intensity_loss(reconstruction, images)
@@ -407,7 +258,7 @@ def main():
     args = parse_args()
     pprint(vars(args))
 
-    wandb.init(project=args.wandb_project_name_VAE, name=args.run_name, config=args)
+    wandb.init(project=args.wandb_project_name, name=args.run_name, config=args)
 
     args.device = 0
     torch.cuda.set_device(args.device)
@@ -420,7 +271,6 @@ def main():
 
     # Define Autoencoder KL network and discriminator
     autoencoder = define_instance(args, "autoencoder_def").to(args.device)
-    summary(autoencoder)
     discriminator = PatchDiscriminator(
         spatial_dims=args.spatial_dims, num_layers_d=3, num_channels=32, in_channels=1, out_channels=1, norm="INSTANCE"
     ).to(args.device)
@@ -435,12 +285,6 @@ def main():
     os.makedirs(args.diffusion_dir, exist_ok=True)
     trained_g_path_best = os.path.join(args.autoencoder_dir, "autoencoder_best.pt")
     trained_d_path_best = os.path.join(args.autoencoder_dir, "discriminator_best.pt")
-
-    # if args.autoencoder_train["pretrained_load_path"]:
-    #     autoencoder = load_state_dict_partial(autoencoder, args.autoencoder_train["pretrained_load_path"])
-    if args.resume_ckpt:
-        autoencoder = load_state_dict_partial(autoencoder, trained_g_path_best)
-        discriminator = load_state_dict_partial(discriminator, trained_d_path_best)
 
     # Losses
     if "recon_loss" in args.autoencoder_train and args.autoencoder_train["recon_loss"] == "l2":
@@ -477,38 +321,6 @@ def main():
             args,
         )
         wandb.log(train_metrics, step=epoch)
-        for axis in range(3):
-            train_img = visualize_one_slice_in_3d_image_greyscale(images[0, 0, ...], axis)  # .transpose([2, 1, 0])
-            train_recon = visualize_one_slice_in_3d_image_greyscale(
-                reconstruction[0, 0, ...], axis
-            )  # .transpose([2, 1, 0])
-
-            wandb.log(
-                {
-                    f"train/image/gt_axis_{axis}": Image(train_img),
-                    f"train/image/recon_axis_{axis}": Image(train_recon),
-                },
-                step=epoch,
-            )
-        if args.autoencoder_def["_target_"] in [
-            "generative.networks.nets.AutoencoderKLTemplateRegistrationInput",
-            "generative.networks.nets.AutoencoderKLConditionalTemplateRegistrationInput",
-        ]:
-            age = dataset.normalize_age([30.0])
-            age = torch.tensor(age)[None].float().to(args.device)
-            sex = torch.tensor([0.0])[None].float().to(args.device)
-            if args.dataset_type == "BWMSherlock":
-                modality = torch.tensor([0.0])[None].float().to(args.device)
-                condition = torch.cat([age, sex, modality], dim=-1)
-            else:
-                condition = torch.cat([age, sex], dim=-1)
-            images_moving = autoencoder.get_template_image(condition)
-
-            grid_tensor = create_alignment_grid(images_moving, images, reconstruction, edge_crop=10)
-            wandb.log(
-                {"train/alignment_grid": wandb.Image(grid_tensor)},
-                step=epoch,
-            )
 
         # validation
         if epoch % val_interval == 0:
@@ -541,69 +353,6 @@ def main():
                 "val/kl_loss": val_kl_epoch_loss,
             }
             wandb.log(val_metrics, step=epoch)
-
-            for axis in range(3):
-                val_img = visualize_one_slice_in_3d_image_greyscale(images[0, 0, ...], axis)  # .transpose([2, 1, 0])
-                val_recon = visualize_one_slice_in_3d_image_greyscale(
-                    reconstruction[0, 0, ...], axis
-                )  # .transpose([2, 1, 0])
-
-                wandb.log(
-                    {f"val/image/gt_axis_{axis}": Image(val_img), f"val/image/recon_axis_{axis}": Image(val_recon)},
-                    step=epoch,
-                )
-            if args.autoencoder_def["_target_"] in [
-                "generative.networks.nets.AutoencoderKLTemplateRegistrationInput",
-                "generative.networks.nets.AutoencoderKLConditionalTemplateRegistrationInput",
-            ]:
-                age = dataset.normalize_age([30.0])
-                age = torch.tensor(age)[None].float().to(args.device)
-                sex = torch.tensor([0.0])[None].float().to(args.device)
-                if args.dataset_type == "BWMSherlock":
-                    modality = torch.tensor([0.0])[None].float().to(args.device)
-                    condition = torch.cat([age, sex, modality], dim=-1)
-                else:
-                    condition = torch.cat([age, sex], dim=-1)
-                images_moving = autoencoder.get_template_image(condition)
-                grid_tensor = create_alignment_grid(images_moving, images, reconstruction, edge_crop=10)
-                wandb.log(
-                    {"val/alignment_grid": wandb.Image(grid_tensor)},
-                    step=epoch,
-                )
-
-            if args.autoencoder_def["_target_"] in [
-                "generative.networks.nets.AutoencoderKLConditionalTemplateRegistration",
-                "generative.networks.nets.AutoencoderKLConditionalTemplateRegistrationInput",
-            ]:
-                if args.dataset_type == "BWMSherlock":
-                    mod_vizs = [0, 1]
-                else:
-                    mod_vizs = [0]
-                for age_viz in [0, 20, 40, 60, 80, 100]:
-                    for sex_viz in [0.0, 1.0]:
-                        for mod_viz in mod_vizs:
-                            age = dataset.normalize_age([age_viz])
-                            age = torch.tensor(age)[None].float().to(args.device)
-                            sex = torch.tensor([sex_viz])[None].float().to(args.device)
-                            if args.dataset_type == "BWMSherlock":
-                                modality = torch.tensor([mod_viz])[None].float().to(args.device)
-                                condition = torch.cat([age, sex, modality], dim=-1)
-                            else:
-                                condition = torch.cat([age, sex], dim=-1)
-                            print(condition)
-                            images_moving = autoencoder.get_template_image(condition)
-                            for axis in range(3):
-                                train_img_moving = visualize_one_slice_in_3d_image_greyscale(
-                                    images_moving[0, 0, ...], axis
-                                )  # .transpose([2, 1, 0])
-                                wandb.log(
-                                    {
-                                        f"val/image/age_{age_viz}_sex_{sex_viz}_mod_{mod_viz}_img_moving_axis_{axis}": Image(
-                                            train_img_moving
-                                        ),
-                                    },
-                                    step=epoch,
-                                )
 
 
 if __name__ == "__main__":

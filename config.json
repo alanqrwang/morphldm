@@ -1,5 +1,5 @@
 {
-    "run_name": "__auto__condtemplateinput_t1_all_grad5_kl1e-7_balancedage_t1_finalnone_tempch1_final1x1templategen_adv0_005_displace1_minmaxage",
+    "run_name": "example",
     "dataset_type":"T1All",
     "metadata_dim": 2,
     "channel": 0,
@@ -17,11 +17,10 @@
     "sample_balanced_age_for_training": true,
     "use_amp": true,
     "autoencoder_ckpt_name": "best",
-    "resume_ckpt": true,
     "debug_one_sample": false,
     "debug_mode": false,
     "autoencoder_def": {
-        "_target_": "generative.networks.nets.AutoencoderKLConditionalTemplateRegistrationInput",
+        "_target_": "morphldm.autoencoderkl.AutoencoderKLConditionalTemplateRegistration",
         "spatial_dims": "@spatial_dims",
         "in_channels": 2,
         "out_channels": 3,
@@ -41,10 +40,9 @@
         ],
         "with_encoder_nonlocal_attn": false,
         "with_decoder_nonlocal_attn": false,
-        "final_conv": null,
         "diffeomorphic": false,
         "template_shape": [1, 160, 192, 176],
-        "template_generator_type": "unetdecoderfinal1x1",
+        "template_generator_type": "unetdecoderhalfrelu",
         "metadata_dim": "@metadata_dim"
     },
     "autoencoder_train": {
