@@ -85,13 +85,17 @@ class ResizeTransform(nn.Module):
     def forward(self, x):
         if self.factor < 1:
             # resize first to save memory
-            x = nnf.interpolate(x, align_corners=True, scale_factor=self.factor, mode=self.mode)
+            x = nnf.interpolate(
+                x, align_corners=True, scale_factor=self.factor, mode=self.mode
+            )
             x = self.factor * x
 
         elif self.factor > 1:
             # multiply first to save memory
             x = self.factor * x
-            x = nnf.interpolate(x, align_corners=True, scale_factor=self.factor, mode=self.mode)
+            x = nnf.interpolate(
+                x, align_corners=True, scale_factor=self.factor, mode=self.mode
+            )
 
         # don't do anything if resize is 1
         return x
@@ -131,7 +135,9 @@ def displacement2pytorchflow(displacement_field, input_space="voxel"):
     # Convert physical displacement values to the [-1, 1] range
     # Assuming the displacement field is given in voxel units (physical coordinates)
     if input_space == "voxel":
-        for i, dim_size in enumerate([W, H, D]):  # Note the order matches x, y, z as per the displacement_field
+        for i, dim_size in enumerate(
+            [W, H, D]
+        ):  # Note the order matches x, y, z as per the displacement_field
             # Normalize such that the displacement of 1 full dimension length corresponds to a move from -1 to 1
             displacement_field[..., i] = 2 * displacement_field[..., i] / (dim_size - 1)
 
@@ -178,7 +184,9 @@ class Grad(torch.nn.Module):
         if self.penalty == "l1":
             dif = [torch.abs(f) for f in self._diffs(y_pred)]
         else:
-            assert self.penalty == "l2", "penalty can only be l1 or l2. Got: %s" % self.penalty
+            assert self.penalty == "l2", (
+                "penalty can only be l1 or l2. Got: %s" % self.penalty
+            )
             dif = [f * f for f in self._diffs(y_pred)]
 
         df = [torch.mean(torch.flatten(f, start_dim=1), dim=-1) for f in dif]
@@ -190,65 +198,10 @@ class Grad(torch.nn.Module):
         return grad.mean()
 
 
-class MeanStream(nn.Module):
-    """
-    Maintain stream of data mean in PyTorch.
-
-    `cap` refers to maintaining an approximation of up to that number of subjects,
-    ensuring any incoming datapoint will have at least 1/cap weight.
-
-    Adapted from:
-        A.V. Dalca, M. Rakic, J. Guttag, M.R. Sabuncu.
-        Learning Conditional Deformable Templates with Convolutional Networks
-        NeurIPS: Advances in Neural Information Processing Systems. pp 804-816, 2019.
-    """
-
-    def __init__(self, cap=100):
-        super(MeanStream, self).__init__()
-        self.cap = float(cap)
-
-        # Mean and count are registered as buffers to ensure they are saved and loaded with the model
-        self.register_buffer("mean", None)  # Will be initialized dynamically
-        self.register_buffer("count", torch.tensor(0.0))  # Effective count of data points seen
-
-    def forward(self, x):
-        """
-        Forward pass for maintaining and updating the running mean.
-        :param x: Input tensor of shape (batch_size, ...)
-        :param training: Whether to update the mean and count or use the running stats (inference mode).
-        :return: Scaled mean tensor of the same shape as `x`.
-        """
-        if self.mean is None:  # Lazy initialization of mean to match input dimensions
-            self.mean = torch.zeros_like(x[0], device=x.device)
-
-        batch_size = x.shape[0]
-
-        if not self.training:  # Inference mode: use the current running stats
-            scale = min(1.0, self.count.item() / self.cap)
-            return scale * self.mean.unsqueeze(0).expand_as(x)
-
-        # Compute new mean and count
-        new_count = self.count + batch_size
-        weight_old = min(1.0, self.count / (self.count + batch_size))
-        weight_new = 1.0 - weight_old
-
-        # Update mean
-        new_mean = weight_old * self.mean + weight_new * x.mean(dim=0)
-
-        # Update buffers
-        self.count = min(new_count, self.cap)
-        self.mean = new_mean
-
-        # Scale the new mean
-        scale = min(1.0, self.count.item() / self.cap)
-        return scale * self.mean.unsqueeze(0).expand_as(x)
-
-    def extra_repr(self):
-        return f"cap={self.cap}, count={self.count.item()}"
-
-
 class ConvBlockUp(nn.Module):
-    def __init__(self, in_channels, out_channels, stride, norm_type, upsample=True, dim=2):
+    def __init__(
+        self, in_channels, out_channels, stride, norm_type, upsample=True, dim=2
+    ):
         super(ConvBlockUp, self).__init__()
         self.norm_type = norm_type
         self.up_sample = upsample
@@ -264,8 +217,12 @@ class ConvBlockUp(nn.Module):
                 self.norm = nn.GroupNorm(num_groups=8, num_channels=out_channels)
             else:
                 raise NotImplementedError()
-            self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1)
-            self.upsample = Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+            self.conv = nn.Conv2d(
+                in_channels, out_channels, kernel_size=3, stride=stride, padding=1
+            )
+            self.upsample = Upsample(
+                scale_factor=2, mode="bilinear", align_corners=True
+            )
 
         elif dim == 3:
             if norm_type == "none":
@@ -279,8 +236,12 @@ class ConvBlockUp(nn.Module):
             else:
                 raise NotImplementedError()
 
-            self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1)
-            self.upsample = Upsample(scale_factor=2, mode="trilinear", align_corners=True)
+            self.conv = nn.Conv3d(
+                in_channels, out_channels, kernel_size=3, stride=stride, padding=1
+            )
+            self.upsample = Upsample(
+                scale_factor=2, mode="trilinear", align_corners=True
+            )
 
         self.activation = nn.ReLU(out_channels)
 

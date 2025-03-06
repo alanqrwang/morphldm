@@ -5,18 +5,16 @@ import os
 import sys
 from pprint import pprint
 from collections import defaultdict
-import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.nn import L1Loss, MSELoss
 import wandb
-from torchvision.utils import make_grid
 from monai.utils import set_determinism
 from monai.bundle import ConfigParser
 from generative.losses import PatchAdversarialLoss, PerceptualLoss
 from generative.networks.nets import PatchDiscriminator
 
-import morphldm.registration_layers as reg_layers
+import morphldm.layers as reg_layers
 from stai_utils.datasets.dataset_utils import T1All
 
 
@@ -69,7 +67,9 @@ def parse_args():
         default="./config/config_train_32g.json",
         help="config json file that stores hyper-parameters",
     )
-    parser.add_argument("-g", "--gpus", default=1, type=int, help="number of gpus per node")
+    parser.add_argument(
+        "-g", "--gpus", default=1, type=int, help="number of gpus per node"
+    )
     args = parser.parse_args()
 
     env_dict = json.load(open(args.environment_file, "r"))
@@ -92,7 +92,15 @@ def aggregate_dicts(dicts):
 
 
 def train_one_epoch(
-    train_loader, autoencoder, discriminator, optimizer_g, optimizer_d, intensity_loss, loss_perceptual, adv_loss, args
+    train_loader,
+    autoencoder,
+    discriminator,
+    optimizer_g,
+    optimizer_d,
+    intensity_loss,
+    loss_perceptual,
+    adv_loss,
+    args,
 ):
     autoencoder.train()
     discriminator.train()
@@ -121,12 +129,16 @@ def train_one_epoch(
             "morphldm.autoencoderkl.AutoencoderKLTemplateRegistration",
             "morphldm.autoencoderkl.AutoencoderKLConditionalTemplateRegistration",
         ]:
-            reconstruction, z_mu, z_sigma, z, displacement_field = autoencoder(images, condition)
+            reconstruction, z_mu, z_sigma, z, displacement_field = autoencoder(
+                images, condition
+            )
             kl_loss = KL_loss(z_mu, z_sigma)
             recons_loss = intensity_loss(reconstruction.float(), images.float())
             # p_loss = loss_perceptual(reconstruction.float(), images_fixed.float())
             p_loss = torch.tensor(0.0)
-            displace_loss = F.mse_loss(displacement_field, torch.zeros_like(displacement_field))
+            displace_loss = F.mse_loss(
+                displacement_field, torch.zeros_like(displacement_field)
+            )
             grad_loss = reg_layers.Grad(loss_mult=1.0)(None, displacement_field)
             loss_g = (
                 recons_loss
@@ -162,7 +174,9 @@ def train_one_epoch(
 
         if adv_weight > 0 and args.curr_epoch > autoencoder_warm_up_n_epochs:
             logits_fake = discriminator(reconstruction.contiguous().float())[-1]
-            generator_loss = adv_loss(logits_fake, target_is_real=True, for_discriminator=False)
+            generator_loss = adv_loss(
+                logits_fake, target_is_real=True, for_discriminator=False
+            )
             loss_g = loss_g + adv_weight * generator_loss
 
         loss_g.backward()
@@ -172,9 +186,13 @@ def train_one_epoch(
         if adv_weight > 0 and args.curr_epoch > autoencoder_warm_up_n_epochs:
             optimizer_d.zero_grad(set_to_none=True)
             logits_fake = discriminator(reconstruction.contiguous().detach())[-1]
-            loss_d_fake = adv_loss(logits_fake, target_is_real=False, for_discriminator=True)
+            loss_d_fake = adv_loss(
+                logits_fake, target_is_real=False, for_discriminator=True
+            )
             logits_real = discriminator(images.contiguous().detach())[-1]
-            loss_d_real = adv_loss(logits_real, target_is_real=True, for_discriminator=True)
+            loss_d_real = adv_loss(
+                logits_real, target_is_real=True, for_discriminator=True
+            )
             discriminator_loss = (loss_d_fake + loss_d_real) * 0.5
             loss_d = adv_weight * discriminator_loss
 
@@ -190,7 +208,10 @@ def train_one_epoch(
             )
 
         # Convert metrics to numpy
-        train_metrics = {k: torch.as_tensor(v).detach().cpu().numpy().item() for k, v in train_metrics.items()}
+        train_metrics = {
+            k: torch.as_tensor(v).detach().cpu().numpy().item()
+            for k, v in train_metrics.items()
+        }
         res.append(train_metrics)
     return aggregate_dicts(res), images, reconstruction
 
@@ -216,12 +237,16 @@ def eval_one_epoch(val_loader, autoencoder, intensity_loss, loss_perceptual, arg
                 "morphldm.autoencoderkl.AutoencoderKLTemplateRegistration",
                 "morphldm.autoencoderkl.AutoencoderKLConditionalTemplateRegistration",
             ]:
-                reconstruction, z_mu, z_sigma, z, displacement_field = autoencoder(images, condition)
+                reconstruction, z_mu, z_sigma, z, displacement_field = autoencoder(
+                    images, condition
+                )
                 kl_loss = KL_loss(z_mu, z_sigma)
                 recons_loss = intensity_loss(reconstruction.float(), images.float())
                 # p_loss = loss_perceptual(reconstruction.float(), images_fixed.float())
                 p_loss = torch.tensor(0.0)
-                displace_loss = F.mse_loss(displacement_field, torch.zeros_like(displacement_field))
+                displace_loss = F.mse_loss(
+                    displacement_field, torch.zeros_like(displacement_field)
+                )
                 grad_loss = reg_layers.Grad(loss_mult=1.0)(None, displacement_field)
                 loss_g = (
                     recons_loss
@@ -251,7 +276,14 @@ def eval_one_epoch(val_loader, autoencoder, intensity_loss, loss_perceptual, arg
     val_recon_epoch_loss = val_recon_epoch_loss / (step + 1)
     val_grad_epoch_loss = val_grad_epoch_loss / (step + 1)
     val_kl_epoch_loss = val_kl_epoch_loss / (step + 1)
-    return val_epoch_loss, val_recon_epoch_loss, val_grad_epoch_loss, val_kl_epoch_loss, images, reconstruction
+    return (
+        val_epoch_loss,
+        val_recon_epoch_loss,
+        val_grad_epoch_loss,
+        val_kl_epoch_loss,
+        images,
+        reconstruction,
+    )
 
 
 def main():
@@ -272,7 +304,12 @@ def main():
     # Define Autoencoder KL network and discriminator
     autoencoder = define_instance(args, "autoencoder_def").to(args.device)
     discriminator = PatchDiscriminator(
-        spatial_dims=args.spatial_dims, num_layers_d=3, num_channels=32, in_channels=1, out_channels=1, norm="INSTANCE"
+        spatial_dims=args.spatial_dims,
+        num_layers_d=3,
+        num_channels=32,
+        in_channels=1,
+        out_channels=1,
+        norm="INSTANCE",
     ).to(args.device)
 
     args.model_dir = os.path.join(args.base_model_dir, args.run_name)
@@ -287,19 +324,28 @@ def main():
     trained_d_path_best = os.path.join(args.autoencoder_dir, "discriminator_best.pt")
 
     # Losses
-    if "recon_loss" in args.autoencoder_train and args.autoencoder_train["recon_loss"] == "l2":
+    if (
+        "recon_loss" in args.autoencoder_train
+        and args.autoencoder_train["recon_loss"] == "l2"
+    ):
         intensity_loss = MSELoss()
     else:
         intensity_loss = L1Loss()
     adv_loss = PatchAdversarialLoss(criterion="least_squares")
-    loss_perceptual = PerceptualLoss(spatial_dims=3, network_type="squeeze", is_fake_3d=True, fake_3d_ratio=0.2)
+    loss_perceptual = PerceptualLoss(
+        spatial_dims=3, network_type="squeeze", is_fake_3d=True, fake_3d_ratio=0.2
+    )
     loss_perceptual.to(args.device)
     adv_weight = args.autoencoder_train["adv_weight"]
 
     # Optimizers
-    optimizer_g = torch.optim.Adam(params=autoencoder.parameters(), lr=args.autoencoder_train["lr"])
+    optimizer_g = torch.optim.Adam(
+        params=autoencoder.parameters(), lr=args.autoencoder_train["lr"]
+    )
     if adv_weight > 0:
-        optimizer_d = torch.optim.Adam(params=discriminator.parameters(), lr=args.autoencoder_train["lr"])
+        optimizer_d = torch.optim.Adam(
+            params=discriminator.parameters(), lr=args.autoencoder_train["lr"]
+        )
 
     # Training
     n_epochs = args.autoencoder_train["n_epochs"]
@@ -324,15 +370,26 @@ def main():
 
         # validation
         if epoch % val_interval == 0:
-            val_epoch_loss, val_recon_epoch_loss, val_grad_epoch_loss, val_kl_epoch_loss, images, reconstruction = (
-                eval_one_epoch(val_loader, autoencoder, intensity_loss, loss_perceptual, args)
+            (
+                val_epoch_loss,
+                val_recon_epoch_loss,
+                val_grad_epoch_loss,
+                val_kl_epoch_loss,
+                images,
+                reconstruction,
+            ) = eval_one_epoch(
+                val_loader, autoencoder, intensity_loss, loss_perceptual, args
             )
 
             # save last model
             print(f"Epoch {epoch} val_recon_loss: {val_recon_epoch_loss}")
 
-            trained_g_path_epoch = os.path.join(args.autoencoder_dir, f"autoencoder_{epoch}.pt")
-            trained_d_path_epoch = os.path.join(args.autoencoder_dir, f"discriminator_{epoch}.pt")
+            trained_g_path_epoch = os.path.join(
+                args.autoencoder_dir, f"autoencoder_{epoch}.pt"
+            )
+            trained_d_path_epoch = os.path.join(
+                args.autoencoder_dir, f"discriminator_{epoch}.pt"
+            )
 
             torch.save(autoencoder.state_dict(), trained_g_path_epoch)
             torch.save(discriminator.state_dict(), trained_d_path_epoch)

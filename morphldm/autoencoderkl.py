@@ -3,7 +3,8 @@ import torch.nn as nn
 import numpy as np
 
 from generative.networks.nets import AutoencoderKL
-from . import registration_layers as reg_layers
+from . import layers as reg_layers
+
 
 class AutoencoderKLTemplateRegistration(AutoencoderKL):
     def __init__(
@@ -56,13 +57,17 @@ class AutoencoderKLTemplateRegistration(AutoencoderKL):
         if diffeomorphic:
             # configure optional resize layers (downsize)
             if int_steps > 0 and int_downsize > 1:
-                self.resize = reg_layers.ResizeTransform(int_downsize, ndims=kwargs["spatial_dims"])
+                self.resize = reg_layers.ResizeTransform(
+                    int_downsize, ndims=kwargs["spatial_dims"]
+                )
             else:
                 self.resize = None
 
             # resize to full res
             if int_steps > 0 and int_downsize > 1:
-                self.fullsize = reg_layers.ResizeTransform(1 / int_downsize, ndims=kwargs["spatial_dims"])
+                self.fullsize = reg_layers.ResizeTransform(
+                    1 / int_downsize, ndims=kwargs["spatial_dims"]
+                )
             else:
                 self.fullsize = None
 
@@ -71,7 +76,9 @@ class AutoencoderKLTemplateRegistration(AutoencoderKL):
 
             # configure optional integration layer for diffeomorphic warp
             down_shape = [int(dim / int_downsize) for dim in img_size]
-            self.integrate = reg_layers.VecInt(down_shape, int_steps) if int_steps > 0 else None
+            self.integrate = (
+                reg_layers.VecInt(down_shape, int_steps) if int_steps > 0 else None
+            )
 
     def _make_diffeomorphic(self, pos_flow):
         # resize flow for integration
@@ -98,14 +105,18 @@ class AutoencoderKLTemplateRegistration(AutoencoderKL):
             img.shape[2:] == displacement_field.shape[2:]
         ), f"Image shape {img.shape} and displacement field shape {displacement_field.shape} must match"
         displacement_field = displacement_field.permute(0, 2, 3, 4, 1)
-        flow_field = reg_layers.displacement2pytorchflow(displacement_field, input_space="norm")
+        flow_field = reg_layers.displacement2pytorchflow(
+            displacement_field, input_space="norm"
+        )
         return reg_layers.align_img(flow_field, img, mode=self.interpolation_type)
 
     def get_template_image(self, *args):
         del args
         return self.conditional_template_network(self.default_metadata)
 
-    def forward(self, x: torch.Tensor, metadata=None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor, metadata=None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         template = self.get_template_image(metadata)
         z_mu, z_sigma = self.encode(x, template)
         z = self.sampling(z_mu, z_sigma)
@@ -141,14 +152,18 @@ class AutoencoderKLTemplateRegistration(AutoencoderKL):
         displacement_field = super().decode(z)
         if self.diffeomorphic:
             displacement_field = self._make_diffeomorphic(displacement_field)
-        reconstruction = self.displacement_field_to_registered_image(displacement_field, template)
+        reconstruction = self.displacement_field_to_registered_image(
+            displacement_field, template
+        )
         return reconstruction, displacement_field
 
     def decode_stage_2_outputs(self, z, template):
         displacement_field = super().decode(z)
         if self.diffeomorphic:
             displacement_field = self._make_diffeomorphic(displacement_field)
-        reconstruction = self.displacement_field_to_registered_image(displacement_field, template)
+        reconstruction = self.displacement_field_to_registered_image(
+            displacement_field, template
+        )
         return reconstruction
 
 
@@ -172,22 +187,40 @@ class UNetDecoderReLU(nn.Module):
         self.meta_proj = nn.Linear(metadata_dim, self.h_dims[6] * np.prod(reshape))
 
         # The decoding pipeline remains the same, starting from h_dims[6] channels at 1x1 resolution
-        self.block1 = reg_layers.ConvBlockUp(self.h_dims[6], self.h_dims[6], 1, norm_type, False, dim)
-        self.block2 = reg_layers.ConvBlockUp(self.h_dims[6], self.h_dims[5], 1, norm_type, True, dim)
+        self.block1 = reg_layers.ConvBlockUp(
+            self.h_dims[6], self.h_dims[6], 1, norm_type, False, dim
+        )
+        self.block2 = reg_layers.ConvBlockUp(
+            self.h_dims[6], self.h_dims[5], 1, norm_type, True, dim
+        )
 
-        self.block3 = reg_layers.ConvBlockUp(self.h_dims[5], self.h_dims[4], 1, norm_type, False, dim)
-        self.block4 = reg_layers.ConvBlockUp(self.h_dims[4], self.h_dims[3], 1, norm_type, True, dim)
+        self.block3 = reg_layers.ConvBlockUp(
+            self.h_dims[5], self.h_dims[4], 1, norm_type, False, dim
+        )
+        self.block4 = reg_layers.ConvBlockUp(
+            self.h_dims[4], self.h_dims[3], 1, norm_type, True, dim
+        )
 
-        self.block5 = reg_layers.ConvBlockUp(self.h_dims[3], self.h_dims[2], 1, norm_type, False, dim)
-        self.block6 = reg_layers.ConvBlockUp(self.h_dims[2], self.h_dims[1], 1, norm_type, True, dim)
+        self.block5 = reg_layers.ConvBlockUp(
+            self.h_dims[3], self.h_dims[2], 1, norm_type, False, dim
+        )
+        self.block6 = reg_layers.ConvBlockUp(
+            self.h_dims[2], self.h_dims[1], 1, norm_type, True, dim
+        )
 
-        self.block7 = reg_layers.ConvBlockUp(self.h_dims[1], self.h_dims[0], 1, norm_type, False, dim)
-        self.block9 = reg_layers.ConvBlockUp(self.h_dims[0], out_dim, 1, norm_type, False, dim)
+        self.block7 = reg_layers.ConvBlockUp(
+            self.h_dims[1], self.h_dims[0], 1, norm_type, False, dim
+        )
+        self.block9 = reg_layers.ConvBlockUp(
+            self.h_dims[0], out_dim, 1, norm_type, False, dim
+        )
 
     def forward(self, metadata):
         # Project the metadata into a feature map
         meta = self.meta_proj(metadata)  # shape: [B, h_dims[6]]
-        meta = meta.reshape(-1, self.h_dims[6], *self.reshape)  # shape: [B, h_dims[6], 20, 22, 21]
+        meta = meta.reshape(
+            -1, self.h_dims[6], *self.reshape
+        )  # shape: [B, h_dims[6], 20, 22, 21]
 
         out = self.block1(meta)
         out = self.block2(out)
@@ -202,7 +235,15 @@ class UNetDecoderReLU(nn.Module):
 
 
 class UNetDecoderFinal1x1(nn.Module):
-    def __init__(self, dim, metadata_dim, out_dim, norm_type, reshape=(20, 24, 22), final_activation=None):
+    def __init__(
+        self,
+        dim,
+        metadata_dim,
+        out_dim,
+        norm_type,
+        reshape=(20, 24, 22),
+        final_activation=None,
+    ):
         super().__init__()
         self.h_dims = [32, 64, 64, 128, 128, 256, 256, 512]
         self.dim = dim
@@ -213,19 +254,35 @@ class UNetDecoderFinal1x1(nn.Module):
         # Project metadata into a feature vector of h_dims[6] channels
         self.meta_proj = nn.Linear(metadata_dim, self.h_dims[6] * np.prod(reshape))
 
-        self.block1 = reg_layers.ConvBlockUp(self.h_dims[6], self.h_dims[6], 1, norm_type, False, dim)
-        self.block2 = reg_layers.ConvBlockUp(self.h_dims[6], self.h_dims[5], 1, norm_type, True, dim)
-        self.block3 = reg_layers.ConvBlockUp(self.h_dims[5], self.h_dims[4], 1, norm_type, False, dim)
-        self.block4 = reg_layers.ConvBlockUp(self.h_dims[4], self.h_dims[3], 1, norm_type, True, dim)
-        self.block5 = reg_layers.ConvBlockUp(self.h_dims[3], self.h_dims[2], 1, norm_type, False, dim)
-        self.block6 = reg_layers.ConvBlockUp(self.h_dims[2], self.h_dims[1], 1, norm_type, True, dim)
-        self.block7 = reg_layers.ConvBlockUp(self.h_dims[1], self.h_dims[0], 1, norm_type, False, dim)
+        self.block1 = reg_layers.ConvBlockUp(
+            self.h_dims[6], self.h_dims[6], 1, norm_type, False, dim
+        )
+        self.block2 = reg_layers.ConvBlockUp(
+            self.h_dims[6], self.h_dims[5], 1, norm_type, True, dim
+        )
+        self.block3 = reg_layers.ConvBlockUp(
+            self.h_dims[5], self.h_dims[4], 1, norm_type, False, dim
+        )
+        self.block4 = reg_layers.ConvBlockUp(
+            self.h_dims[4], self.h_dims[3], 1, norm_type, True, dim
+        )
+        self.block5 = reg_layers.ConvBlockUp(
+            self.h_dims[3], self.h_dims[2], 1, norm_type, False, dim
+        )
+        self.block6 = reg_layers.ConvBlockUp(
+            self.h_dims[2], self.h_dims[1], 1, norm_type, True, dim
+        )
+        self.block7 = reg_layers.ConvBlockUp(
+            self.h_dims[1], self.h_dims[0], 1, norm_type, False, dim
+        )
         self.block9 = nn.Conv3d(self.h_dims[0], out_dim, kernel_size=1)
 
     def forward(self, metadata):
         # Project the metadata into a feature map
         meta = self.meta_proj(metadata)  # shape: [B, h_dims[6]]
-        meta = meta.reshape(-1, self.h_dims[6], *self.reshape)  # shape: [B, h_dims[6], 20, 22, 21]
+        meta = meta.reshape(
+            -1, self.h_dims[6], *self.reshape
+        )  # shape: [B, h_dims[6], 20, 22, 21]
 
         out = self.block1(meta)
         out = self.block2(out)
@@ -241,7 +298,15 @@ class UNetDecoderFinal1x1(nn.Module):
 
 
 class UNetDecoderHalfReLU(nn.Module):
-    def __init__(self, dim, metadata_dim, out_dim, norm_type, reshape=(20, 24, 22), final_activation=None):
+    def __init__(
+        self,
+        dim,
+        metadata_dim,
+        out_dim,
+        norm_type,
+        reshape=(20, 24, 22),
+        final_activation=None,
+    ):
         super().__init__()
         self.h_dims = [32, 64, 64, 128, 128, 256, 256, 512]
         self.dim = dim
@@ -252,16 +317,28 @@ class UNetDecoderHalfReLU(nn.Module):
         # Project metadata into a feature vector of h_dims[6] channels
         self.meta_proj = nn.Linear(metadata_dim, self.h_dims[6] * np.prod(reshape))
 
-        self.block1 = reg_layers.ConvBlockUp(self.h_dims[6], self.h_dims[6], 1, norm_type, False, dim)
-        self.block2 = reg_layers.ConvBlockUp(self.h_dims[6], self.h_dims[4], 1, norm_type, True, dim)
-        self.block3 = reg_layers.ConvBlockUp(self.h_dims[4], self.h_dims[2], 1, norm_type, True, dim)
-        self.block4 = reg_layers.ConvBlockUp(self.h_dims[2], self.h_dims[0], 1, norm_type, True, dim)
-        self.block5 = reg_layers.ConvBlockUp(self.h_dims[0], out_dim, 1, norm_type, False, dim)
+        self.block1 = reg_layers.ConvBlockUp(
+            self.h_dims[6], self.h_dims[6], 1, norm_type, False, dim
+        )
+        self.block2 = reg_layers.ConvBlockUp(
+            self.h_dims[6], self.h_dims[4], 1, norm_type, True, dim
+        )
+        self.block3 = reg_layers.ConvBlockUp(
+            self.h_dims[4], self.h_dims[2], 1, norm_type, True, dim
+        )
+        self.block4 = reg_layers.ConvBlockUp(
+            self.h_dims[2], self.h_dims[0], 1, norm_type, True, dim
+        )
+        self.block5 = reg_layers.ConvBlockUp(
+            self.h_dims[0], out_dim, 1, norm_type, False, dim
+        )
 
     def forward(self, metadata):
         # Project the metadata into a feature map
         meta = self.meta_proj(metadata)  # shape: [B, h_dims[6]]
-        meta = meta.reshape(-1, self.h_dims[6], *self.reshape)  # shape: [B, h_dims[6], 20, 22, 21]
+        meta = meta.reshape(
+            -1, self.h_dims[6], *self.reshape
+        )  # shape: [B, h_dims[6], 20, 22, 21]
 
         out = self.block1(meta)
         out = self.block2(out)

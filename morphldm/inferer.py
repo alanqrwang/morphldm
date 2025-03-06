@@ -82,9 +82,14 @@ class DiffusionInferer(Inferer):
         if mode not in ["crossattn", "concat"]:
             raise NotImplementedError(f"{mode} condition is not supported")
 
-        noisy_image = self.scheduler.add_noise(original_samples=inputs, noise=noise, timesteps=timesteps)
+        noisy_image = self.scheduler.add_noise(
+            original_samples=inputs, noise=noise, timesteps=timesteps
+        )
         if plot_img:
-            plot_latent(noisy_image.cpu().detach().numpy(), title=f"Latent with noise added at timestep {timesteps}")
+            plot_latent(
+                noisy_image.cpu().detach().numpy(),
+                title=f"Latent with noise added at timestep {timesteps}",
+            )
         if mode == "concat":
             noisy_image = torch.cat([noisy_image, condition], dim=1)
             condition = None
@@ -93,7 +98,9 @@ class DiffusionInferer(Inferer):
             if isinstance(diffusion_model, SPADEDiffusionModelUNet)
             else diffusion_model
         )
-        prediction = diffusion_model(x=noisy_image, timesteps=timesteps, context=condition)
+        prediction = diffusion_model(
+            x=noisy_image, timesteps=timesteps, context=condition
+        )
 
         return prediction
 
@@ -144,11 +151,15 @@ class DiffusionInferer(Inferer):
             if mode == "concat":
                 model_input = torch.cat([image, conditioning], dim=1)
                 model_output = diffusion_model(
-                    model_input, timesteps=torch.Tensor((t,)).to(input_noise.device), context=None
+                    model_input,
+                    timesteps=torch.Tensor((t,)).to(input_noise.device),
+                    context=None,
                 )
             else:
                 model_output = diffusion_model(
-                    image, timesteps=torch.Tensor((t,)).to(input_noise.device), context=conditioning
+                    image,
+                    timesteps=torch.Tensor((t,)).to(input_noise.device),
+                    context=conditioning,
                 )
 
             # 2. compute previous image: x_t -> x_t-1
@@ -211,7 +222,9 @@ class DiffusionInferer(Inferer):
         total_kl = torch.zeros(inputs.shape[0]).to(inputs.device)
         for t in progress_bar:
             timesteps = torch.full(inputs.shape[:1], t, device=inputs.device).long()
-            noisy_image = self.scheduler.add_noise(original_samples=inputs, noise=noise, timesteps=timesteps)
+            noisy_image = self.scheduler.add_noise(
+                original_samples=inputs, noise=noise, timesteps=timesteps
+            )
             diffusion_model = (
                 partial(diffusion_model, seg=seg)
                 if isinstance(diffusion_model, SPADEDiffusionModelUNet)
@@ -219,49 +232,78 @@ class DiffusionInferer(Inferer):
             )
             if mode == "concat":
                 noisy_image = torch.cat([noisy_image, conditioning], dim=1)
-                model_output = diffusion_model(noisy_image, timesteps=timesteps, context=None)
+                model_output = diffusion_model(
+                    noisy_image, timesteps=timesteps, context=None
+                )
             else:
-                model_output = diffusion_model(x=noisy_image, timesteps=timesteps, context=conditioning)
+                model_output = diffusion_model(
+                    x=noisy_image, timesteps=timesteps, context=conditioning
+                )
 
             # get the model's predicted mean,  and variance if it is predicted
-            if model_output.shape[1] == inputs.shape[1] * 2 and scheduler.variance_type in ["learned", "learned_range"]:
-                model_output, predicted_variance = torch.split(model_output, inputs.shape[1], dim=1)
+            if model_output.shape[1] == inputs.shape[
+                1
+            ] * 2 and scheduler.variance_type in ["learned", "learned_range"]:
+                model_output, predicted_variance = torch.split(
+                    model_output, inputs.shape[1], dim=1
+                )
             else:
                 predicted_variance = None
 
             # 1. compute alphas, betas
             alpha_prod_t = scheduler.alphas_cumprod[t]
-            alpha_prod_t_prev = scheduler.alphas_cumprod[t - 1] if t > 0 else scheduler.one
+            alpha_prod_t_prev = (
+                scheduler.alphas_cumprod[t - 1] if t > 0 else scheduler.one
+            )
             beta_prod_t = 1 - alpha_prod_t
             beta_prod_t_prev = 1 - alpha_prod_t_prev
 
             # 2. compute predicted original sample from predicted noise also called
             # "predicted x_0" of formula (15) from https://arxiv.org/pdf/2006.11239.pdf
             if scheduler.prediction_type == "epsilon":
-                pred_original_sample = (noisy_image - beta_prod_t ** (0.5) * model_output) / alpha_prod_t ** (0.5)
+                pred_original_sample = (
+                    noisy_image - beta_prod_t ** (0.5) * model_output
+                ) / alpha_prod_t ** (0.5)
             elif scheduler.prediction_type == "sample":
                 pred_original_sample = model_output
             elif scheduler.prediction_type == "v_prediction":
-                pred_original_sample = (alpha_prod_t**0.5) * noisy_image - (beta_prod_t**0.5) * model_output
+                pred_original_sample = (alpha_prod_t**0.5) * noisy_image - (
+                    beta_prod_t**0.5
+                ) * model_output
             # 3. Clip "predicted x_0"
             if scheduler.clip_sample:
                 pred_original_sample = torch.clamp(pred_original_sample, -1, 1)
 
             # 4. Compute coefficients for pred_original_sample x_0 and current sample x_t
             # See formula (7) from https://arxiv.org/pdf/2006.11239.pdf
-            pred_original_sample_coeff = (alpha_prod_t_prev ** (0.5) * scheduler.betas[t]) / beta_prod_t
-            current_sample_coeff = scheduler.alphas[t] ** (0.5) * beta_prod_t_prev / beta_prod_t
+            pred_original_sample_coeff = (
+                alpha_prod_t_prev ** (0.5) * scheduler.betas[t]
+            ) / beta_prod_t
+            current_sample_coeff = (
+                scheduler.alphas[t] ** (0.5) * beta_prod_t_prev / beta_prod_t
+            )
 
             # 5. Compute predicted previous sample µ_t
             # See formula (7) from https://arxiv.org/pdf/2006.11239.pdf
-            predicted_mean = pred_original_sample_coeff * pred_original_sample + current_sample_coeff * noisy_image
+            predicted_mean = (
+                pred_original_sample_coeff * pred_original_sample
+                + current_sample_coeff * noisy_image
+            )
 
             # get the posterior mean and variance
-            posterior_mean = scheduler._get_mean(timestep=t, x_0=inputs, x_t=noisy_image)
-            posterior_variance = scheduler._get_variance(timestep=t, predicted_variance=predicted_variance)
+            posterior_mean = scheduler._get_mean(
+                timestep=t, x_0=inputs, x_t=noisy_image
+            )
+            posterior_variance = scheduler._get_variance(
+                timestep=t, predicted_variance=predicted_variance
+            )
 
             log_posterior_variance = torch.log(posterior_variance)
-            log_predicted_variance = torch.log(predicted_variance) if predicted_variance else log_posterior_variance
+            log_predicted_variance = (
+                torch.log(predicted_variance)
+                if predicted_variance
+                else log_posterior_variance
+            )
 
             if t == 0:
                 # compute -log p(x_0|x_1)
@@ -279,7 +321,8 @@ class DiffusionInferer(Inferer):
                     + log_predicted_variance
                     - log_posterior_variance
                     + torch.exp(log_posterior_variance - log_predicted_variance)
-                    + ((posterior_mean - predicted_mean) ** 2) * torch.exp(-log_predicted_variance)
+                    + ((posterior_mean - predicted_mean) ** 2)
+                    * torch.exp(-log_predicted_variance)
                 )
             total_kl += kl.view(kl.shape[0], -1).mean(axis=1)
             if save_intermediates:
@@ -297,7 +340,11 @@ class DiffusionInferer(Inferer):
         """
 
         return 0.5 * (
-            1.0 + torch.tanh(torch.sqrt(torch.Tensor([2.0 / math.pi]).to(x.device)) * (x + 0.044715 * torch.pow(x, 3)))
+            1.0
+            + torch.tanh(
+                torch.sqrt(torch.Tensor([2.0 / math.pi]).to(x.device))
+                * (x + 0.044715 * torch.pow(x, 3))
+            )
         )
 
     def _get_decoder_log_likelihood(
@@ -336,7 +383,11 @@ class DiffusionInferer(Inferer):
         log_probs = torch.where(
             inputs < -0.999,
             log_cdf_plus,
-            torch.where(inputs > 0.999, log_one_minus_cdf_min, torch.log(cdf_delta.clamp(min=1e-12))),
+            torch.where(
+                inputs > 0.999,
+                log_one_minus_cdf_min,
+                torch.log(cdf_delta.clamp(min=1e-12)),
+            ),
         )
         assert log_probs.shape == inputs.shape
         return log_probs
@@ -366,12 +417,17 @@ class LatentDiffusionInferer(DiffusionInferer):
         super().__init__(scheduler=scheduler)
         self.scale_factor = scale_factor
         if (ldm_latent_shape is None) ^ (autoencoder_latent_shape is None):
-            raise ValueError("If ldm_latent_shape is None, autoencoder_latent_shape must be None" "and vice versa.")
+            raise ValueError(
+                "If ldm_latent_shape is None, autoencoder_latent_shape must be None"
+                "and vice versa."
+            )
         self.ldm_latent_shape = ldm_latent_shape
         self.autoencoder_latent_shape = autoencoder_latent_shape
         if self.ldm_latent_shape is not None:
             self.ldm_resizer = SpatialPad(spatial_size=self.ldm_latent_shape)
-            self.autoencoder_resizer = CenterSpatialCrop(roi_size=self.autoencoder_latent_shape)
+            self.autoencoder_resizer = CenterSpatialCrop(
+                roi_size=self.autoencoder_latent_shape
+            )
 
     def __call__(
         self,
@@ -406,16 +462,25 @@ class LatentDiffusionInferer(DiffusionInferer):
         with torch.no_grad():
             autoencode = autoencoder_model.encode_stage_2_inputs
             if isinstance(autoencoder_model, VQVAE):
-                autoencode = partial(autoencoder_model.encode_stage_2_inputs, quantized=quantized)
+                autoencode = partial(
+                    autoencoder_model.encode_stage_2_inputs, quantized=quantized
+                )
             if isinstance(
                 autoencoder_model,
-                (AutoencoderKLTemplateRegistration, AutoencoderKLConditionalTemplateRegistration),
+                (
+                    AutoencoderKLTemplateRegistration,
+                    AutoencoderKLConditionalTemplateRegistration,
+                ),
             ):
-                autoencode = partial(autoencoder_model.encode_stage_2_inputs, template=template)
+                autoencode = partial(
+                    autoencoder_model.encode_stage_2_inputs, template=template
+                )
             latent = autoencode(inputs) * self.scale_factor
 
         if self.ldm_latent_shape is not None:
-            latent = torch.stack([self.ldm_resizer(i) for i in decollate_batch(latent)], 0)
+            latent = torch.stack(
+                [self.ldm_resizer(i) for i in decollate_batch(latent)], 0
+            )
 
         if plot_img:
             plot_latent(latent.cpu().detach().numpy(), title="Latent GT")
@@ -500,10 +565,14 @@ class LatentDiffusionInferer(DiffusionInferer):
             latent = outputs
 
         if self.autoencoder_latent_shape is not None:
-            latent = torch.stack([self.autoencoder_resizer(i) for i in decollate_batch(latent)], 0)
+            latent = torch.stack(
+                [self.autoencoder_resizer(i) for i in decollate_batch(latent)], 0
+            )
             if save_intermediates:
                 latent_intermediates = [
-                    torch.stack([self.autoencoder_resizer(i) for i in decollate_batch(l)], 0)
+                    torch.stack(
+                        [self.autoencoder_resizer(i) for i in decollate_batch(l)], 0
+                    )
                     for l in latent_intermediates
                 ]
 
@@ -512,10 +581,15 @@ class LatentDiffusionInferer(DiffusionInferer):
             decode = partial(autoencoder_model.decode_stage_2_outputs, seg=seg)
         if isinstance(
             autoencoder_model,
-            (AutoencoderKLTemplateRegistration, AutoencoderKLConditionalTemplateRegistration),
+            (
+                AutoencoderKLTemplateRegistration,
+                AutoencoderKLConditionalTemplateRegistration,
+            ),
         ):
             # Pass condition information to decoder
-            decode = partial(autoencoder_model.decode_stage_2_outputs, template=template)
+            decode = partial(
+                autoencoder_model.decode_stage_2_outputs, template=template
+            )
         image = decode(latent / self.scale_factor)
 
         if save_intermediates:
@@ -526,9 +600,14 @@ class LatentDiffusionInferer(DiffusionInferer):
                     decode = partial(autoencoder_model.decode_stage_2_outputs, seg=seg)
                 if isinstance(
                     autoencoder_model,
-                    (AutoencoderKLTemplateRegistration, AutoencoderKLConditionalTemplateRegistration),
+                    (
+                        AutoencoderKLTemplateRegistration,
+                        AutoencoderKLConditionalTemplateRegistration,
+                    ),
                 ):
-                    decode = partial(autoencoder_model.decode_stage_2_outputs, template=template)
+                    decode = partial(
+                        autoencoder_model.decode_stage_2_outputs, template=template
+                    )
                 intermediates.append(decode(latent_intermediate / self.scale_factor))
             return image, intermediates, latent_intermediates
 
@@ -576,18 +655,26 @@ class LatentDiffusionInferer(DiffusionInferer):
             quantized: if autoencoder_model is a VQVAE, quantized controls whether the latents to the LDM
             are quantized or not.
         """
-        if resample_latent_likelihoods and resample_interpolation_mode not in ("nearest", "bilinear", "trilinear"):
+        if resample_latent_likelihoods and resample_interpolation_mode not in (
+            "nearest",
+            "bilinear",
+            "trilinear",
+        ):
             raise ValueError(
                 f"resample_interpolation mode should be either nearest, bilinear, or trilinear, got {resample_interpolation_mode}"
             )
 
         autoencode = autoencoder_model.encode_stage_2_inputs
         if isinstance(autoencoder_model, VQVAE):
-            autoencode = partial(autoencoder_model.encode_stage_2_inputs, quantized=quantized)
+            autoencode = partial(
+                autoencoder_model.encode_stage_2_inputs, quantized=quantized
+            )
         latents = autoencode(inputs) * self.scale_factor
 
         if self.ldm_latent_shape is not None:
-            latents = torch.stack([self.ldm_resizer(i) for i in decollate_batch(latents)], 0)
+            latents = torch.stack(
+                [self.ldm_resizer(i) for i in decollate_batch(latents)], 0
+            )
 
         get_likelihood = super().get_likelihood
         if isinstance(diffusion_model, SPADEDiffusionModelUNet):
@@ -605,7 +692,9 @@ class LatentDiffusionInferer(DiffusionInferer):
 
         if save_intermediates and resample_latent_likelihoods:
             intermediates = outputs[1]
-            resizer = nn.Upsample(size=inputs.shape[2:], mode=resample_interpolation_mode)
+            resizer = nn.Upsample(
+                size=inputs.shape[2:], mode=resample_interpolation_mode
+            )
             intermediates = [resizer(x) for x in intermediates]
             outputs = (outputs[0], intermediates)
         return outputs
@@ -654,14 +743,19 @@ class ControlNetDiffusionInferer(DiffusionInferer):
         if mode not in ["crossattn", "concat"]:
             raise NotImplementedError(f"{mode} condition is not supported")
 
-        noisy_image = self.scheduler.add_noise(original_samples=inputs, noise=noise, timesteps=timesteps)
+        noisy_image = self.scheduler.add_noise(
+            original_samples=inputs, noise=noise, timesteps=timesteps
+        )
 
         if mode == "concat":
             noisy_image = torch.cat([noisy_image, condition], dim=1)
             condition = None
 
         down_block_res_samples, mid_block_res_sample = controlnet(
-            x=noisy_image, timesteps=timesteps, controlnet_cond=cn_cond, context=condition
+            x=noisy_image,
+            timesteps=timesteps,
+            controlnet_cond=cn_cond,
+            context=condition,
         )
 
         diffuse = diffusion_model
@@ -807,7 +901,9 @@ class ControlNetDiffusionInferer(DiffusionInferer):
         total_kl = torch.zeros(inputs.shape[0]).to(inputs.device)
         for t in progress_bar:
             timesteps = torch.full(inputs.shape[:1], t, device=inputs.device).long()
-            noisy_image = self.scheduler.add_noise(original_samples=inputs, noise=noise, timesteps=timesteps)
+            noisy_image = self.scheduler.add_noise(
+                original_samples=inputs, noise=noise, timesteps=timesteps
+            )
 
             if mode == "concat":
                 noisy_image = torch.cat([noisy_image, conditioning], dim=1)
@@ -833,44 +929,69 @@ class ControlNetDiffusionInferer(DiffusionInferer):
             )
 
             # get the model's predicted mean,  and variance if it is predicted
-            if model_output.shape[1] == inputs.shape[1] * 2 and scheduler.variance_type in ["learned", "learned_range"]:
-                model_output, predicted_variance = torch.split(model_output, inputs.shape[1], dim=1)
+            if model_output.shape[1] == inputs.shape[
+                1
+            ] * 2 and scheduler.variance_type in ["learned", "learned_range"]:
+                model_output, predicted_variance = torch.split(
+                    model_output, inputs.shape[1], dim=1
+                )
             else:
                 predicted_variance = None
 
             # 1. compute alphas, betas
             alpha_prod_t = scheduler.alphas_cumprod[t]
-            alpha_prod_t_prev = scheduler.alphas_cumprod[t - 1] if t > 0 else scheduler.one
+            alpha_prod_t_prev = (
+                scheduler.alphas_cumprod[t - 1] if t > 0 else scheduler.one
+            )
             beta_prod_t = 1 - alpha_prod_t
             beta_prod_t_prev = 1 - alpha_prod_t_prev
 
             # 2. compute predicted original sample from predicted noise also called
             # "predicted x_0" of formula (15) from https://arxiv.org/pdf/2006.11239.pdf
             if scheduler.prediction_type == "epsilon":
-                pred_original_sample = (noisy_image - beta_prod_t ** (0.5) * model_output) / alpha_prod_t ** (0.5)
+                pred_original_sample = (
+                    noisy_image - beta_prod_t ** (0.5) * model_output
+                ) / alpha_prod_t ** (0.5)
             elif scheduler.prediction_type == "sample":
                 pred_original_sample = model_output
             elif scheduler.prediction_type == "v_prediction":
-                pred_original_sample = (alpha_prod_t**0.5) * noisy_image - (beta_prod_t**0.5) * model_output
+                pred_original_sample = (alpha_prod_t**0.5) * noisy_image - (
+                    beta_prod_t**0.5
+                ) * model_output
             # 3. Clip "predicted x_0"
             if scheduler.clip_sample:
                 pred_original_sample = torch.clamp(pred_original_sample, -1, 1)
 
             # 4. Compute coefficients for pred_original_sample x_0 and current sample x_t
             # See formula (7) from https://arxiv.org/pdf/2006.11239.pdf
-            pred_original_sample_coeff = (alpha_prod_t_prev ** (0.5) * scheduler.betas[t]) / beta_prod_t
-            current_sample_coeff = scheduler.alphas[t] ** (0.5) * beta_prod_t_prev / beta_prod_t
+            pred_original_sample_coeff = (
+                alpha_prod_t_prev ** (0.5) * scheduler.betas[t]
+            ) / beta_prod_t
+            current_sample_coeff = (
+                scheduler.alphas[t] ** (0.5) * beta_prod_t_prev / beta_prod_t
+            )
 
             # 5. Compute predicted previous sample µ_t
             # See formula (7) from https://arxiv.org/pdf/2006.11239.pdf
-            predicted_mean = pred_original_sample_coeff * pred_original_sample + current_sample_coeff * noisy_image
+            predicted_mean = (
+                pred_original_sample_coeff * pred_original_sample
+                + current_sample_coeff * noisy_image
+            )
 
             # get the posterior mean and variance
-            posterior_mean = scheduler._get_mean(timestep=t, x_0=inputs, x_t=noisy_image)
-            posterior_variance = scheduler._get_variance(timestep=t, predicted_variance=predicted_variance)
+            posterior_mean = scheduler._get_mean(
+                timestep=t, x_0=inputs, x_t=noisy_image
+            )
+            posterior_variance = scheduler._get_variance(
+                timestep=t, predicted_variance=predicted_variance
+            )
 
             log_posterior_variance = torch.log(posterior_variance)
-            log_predicted_variance = torch.log(predicted_variance) if predicted_variance else log_posterior_variance
+            log_predicted_variance = (
+                torch.log(predicted_variance)
+                if predicted_variance
+                else log_posterior_variance
+            )
 
             if t == 0:
                 # compute -log p(x_0|x_1)
@@ -888,7 +1009,8 @@ class ControlNetDiffusionInferer(DiffusionInferer):
                     + log_predicted_variance
                     - log_posterior_variance
                     + torch.exp(log_posterior_variance - log_predicted_variance)
-                    + ((posterior_mean - predicted_mean) ** 2) * torch.exp(-log_predicted_variance)
+                    + ((posterior_mean - predicted_mean) ** 2)
+                    * torch.exp(-log_predicted_variance)
                 )
             total_kl += kl.view(kl.shape[0], -1).mean(axis=1)
             if save_intermediates:
@@ -925,12 +1047,17 @@ class ControlNetLatentDiffusionInferer(ControlNetDiffusionInferer):
         super().__init__(scheduler=scheduler)
         self.scale_factor = scale_factor
         if (ldm_latent_shape is None) ^ (autoencoder_latent_shape is None):
-            raise ValueError("If ldm_latent_shape is None, autoencoder_latent_shape must be None" "and vice versa.")
+            raise ValueError(
+                "If ldm_latent_shape is None, autoencoder_latent_shape must be None"
+                "and vice versa."
+            )
         self.ldm_latent_shape = ldm_latent_shape
         self.autoencoder_latent_shape = autoencoder_latent_shape
         if self.ldm_latent_shape is not None:
             self.ldm_resizer = SpatialPad(spatial_size=self.ldm_latent_shape)
-            self.autoencoder_resizer = CenterSpatialCrop(roi_size=[-1] + self.autoencoder_latent_shape)
+            self.autoencoder_resizer = CenterSpatialCrop(
+                roi_size=[-1] + self.autoencoder_latent_shape
+            )
 
     def __call__(
         self,
@@ -966,11 +1093,15 @@ class ControlNetLatentDiffusionInferer(ControlNetDiffusionInferer):
         with torch.no_grad():
             autoencode = autoencoder_model.encode_stage_2_inputs
             if isinstance(autoencoder_model, VQVAE):
-                autoencode = partial(autoencoder_model.encode_stage_2_inputs, quantized=quantized)
+                autoencode = partial(
+                    autoencoder_model.encode_stage_2_inputs, quantized=quantized
+                )
             latent = autoencode(inputs) * self.scale_factor
 
         if self.ldm_latent_shape is not None:
-            latent = torch.stack([self.ldm_resizer(i) for i in decollate_batch(latent)], 0)
+            latent = torch.stack(
+                [self.ldm_resizer(i) for i in decollate_batch(latent)], 0
+            )
 
         if cn_cond.shape[2:] != latent.shape[2:]:
             cn_cond = F.interpolate(cn_cond, latent.shape[2:])
@@ -1061,10 +1192,14 @@ class ControlNetLatentDiffusionInferer(ControlNetDiffusionInferer):
             latent = outputs
 
         if self.autoencoder_latent_shape is not None:
-            latent = torch.stack([self.autoencoder_resizer(i) for i in decollate_batch(latent)], 0)
+            latent = torch.stack(
+                [self.autoencoder_resizer(i) for i in decollate_batch(latent)], 0
+            )
             if save_intermediates:
                 latent_intermediates = [
-                    torch.stack([self.autoencoder_resizer(i) for i in decollate_batch(l)], 0)
+                    torch.stack(
+                        [self.autoencoder_resizer(i) for i in decollate_batch(l)], 0
+                    )
                     for l in latent_intermediates
                 ]
 
@@ -1131,7 +1266,11 @@ class ControlNetLatentDiffusionInferer(ControlNetDiffusionInferer):
             quantized: if autoencoder_model is a VQVAE, quantized controls whether the latents to the LDM
             are quantized or not.
         """
-        if resample_latent_likelihoods and resample_interpolation_mode not in ("nearest", "bilinear", "trilinear"):
+        if resample_latent_likelihoods and resample_interpolation_mode not in (
+            "nearest",
+            "bilinear",
+            "trilinear",
+        ):
             raise ValueError(
                 f"resample_interpolation mode should be either nearest, bilinear, or trilinear, got {resample_interpolation_mode}"
             )
@@ -1139,14 +1278,18 @@ class ControlNetLatentDiffusionInferer(ControlNetDiffusionInferer):
         with torch.no_grad():
             autoencode = autoencoder_model.encode_stage_2_inputs
             if isinstance(autoencoder_model, VQVAE):
-                autoencode = partial(autoencoder_model.encode_stage_2_inputs, quantized=quantized)
+                autoencode = partial(
+                    autoencoder_model.encode_stage_2_inputs, quantized=quantized
+                )
             latents = autoencode(inputs) * self.scale_factor
 
         if cn_cond.shape[2:] != latents.shape[2:]:
             cn_cond = F.interpolate(cn_cond, latents.shape[2:])
 
         if self.ldm_latent_shape is not None:
-            latents = torch.stack([self.ldm_resizer(i) for i in decollate_batch(latents)], 0)
+            latents = torch.stack(
+                [self.ldm_resizer(i) for i in decollate_batch(latents)], 0
+            )
 
         get_likelihood = super().get_likelihood
         if isinstance(diffusion_model, SPADEDiffusionModelUNet):
@@ -1166,7 +1309,9 @@ class ControlNetLatentDiffusionInferer(ControlNetDiffusionInferer):
 
         if save_intermediates and resample_latent_likelihoods:
             intermediates = outputs[1]
-            resizer = nn.Upsample(size=inputs.shape[2:], mode=resample_interpolation_mode)
+            resizer = nn.Upsample(
+                size=inputs.shape[2:], mode=resample_interpolation_mode
+            )
             intermediates = [resizer(x) for x in intermediates]
             outputs = (outputs[0], intermediates)
         return outputs
@@ -1220,12 +1365,20 @@ class VQVAETransformerInferer(Inferer):
         seq_len = latent.shape[1]
         max_seq_len = transformer_model.max_seq_len
         if max_seq_len < seq_len:
-            start = torch.randint(low=0, high=seq_len + 1 - max_seq_len, size=(1,)).item()
+            start = torch.randint(
+                low=0, high=seq_len + 1 - max_seq_len, size=(1,)
+            ).item()
         else:
             start = 0
-        prediction = transformer_model(x=latent[:, start : start + max_seq_len], context=condition)
+        prediction = transformer_model(
+            x=latent[:, start : start + max_seq_len], context=condition
+        )
         if return_latent:
-            return prediction, target[:, start : start + max_seq_len], latent_spatial_dim
+            return (
+                prediction,
+                target[:, start : start + max_seq_len],
+                latent_spatial_dim,
+            )
         else:
             return prediction
 
@@ -1321,7 +1474,11 @@ class VQVAETransformerInferer(Inferer):
             verbose: if true, prints the progression bar of the sampling process.
 
         """
-        if resample_latent_likelihoods and resample_interpolation_mode not in ("nearest", "bilinear", "trilinear"):
+        if resample_latent_likelihoods and resample_interpolation_mode not in (
+            "nearest",
+            "bilinear",
+            "trilinear",
+        ):
             raise ValueError(
                 f"resample_interpolation mode should be either nearest, bilinear, or trilinear, got {resample_interpolation_mode}"
             )
@@ -1340,11 +1497,15 @@ class VQVAETransformerInferer(Inferer):
         latent = latent.long()
 
         # get the first batch, up to max_seq_length, efficiently
-        logits = transformer_model(x=latent[:, : transformer_model.max_seq_len], context=condition)
+        logits = transformer_model(
+            x=latent[:, : transformer_model.max_seq_len], context=condition
+        )
         probs = F.softmax(logits, dim=-1)
         # target token for each set of logits is the next token along
         target = latent[:, 1:]
-        probs = torch.gather(probs, 2, target[:, : transformer_model.max_seq_len].unsqueeze(2)).squeeze(2)
+        probs = torch.gather(
+            probs, 2, target[:, : transformer_model.max_seq_len].unsqueeze(2)
+        ).squeeze(2)
 
         # if we have not covered the full sequence we continue with inefficient looping
         if probs.shape[1] < target.shape[1]:
@@ -1373,7 +1534,9 @@ class VQVAETransformerInferer(Inferer):
         probs = probs[:, ordering.get_revert_sequence_ordering()]
         probs_reshaped = probs.reshape((inputs.shape[0],) + latent_spatial_dim)
         if resample_latent_likelihoods:
-            resizer = nn.Upsample(size=inputs.shape[2:], mode=resample_interpolation_mode)
+            resizer = nn.Upsample(
+                size=inputs.shape[2:], mode=resample_interpolation_mode
+            )
             probs_reshaped = resizer(probs_reshaped[:, None, ...])
 
         return probs_reshaped
