@@ -10,7 +10,7 @@ Make sure they are installed and included in your PYTHONPATH.
 ## Training on your own data
 To train on your own data, edit the `get_data()` function in both `train_autoencoder.py` and `train_diffusion.py` to return your `train_loader` and `val_loader`.
 The code expects each mini-batch to be in the form of a dictionary with keys `image`, `age`, and `sex`.
-You can edit this to include your own conditions
+You can edit this to include your own conditions.
 
 `config.json` contains the hyperparameters for training the models.
 `environment_config.json` contains the paths to the data, output directory, and logging information.
