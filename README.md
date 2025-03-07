@@ -21,3 +21,16 @@ You can edit this to include your own conditions
 
 ### Train Diffusion UNet
 `python train_diffusion.py -c config.json -e environment_config.json`
+
+## Citation
+```
+@misc{wang2025generatingnovelbrainmorphology,
+      title={Generating Novel Brain Morphology by Deforming Learned Templates}, 
+      author={Alan Q. Wang and Fangrui Huang and Bailey Trang and Wei Peng and Mohammad Abbasi and Kilian Pohl and Mert Sabuncu and Ehsan Adeli},
+      year={2025},
+      eprint={2503.03778},
+      archivePrefix={arXiv},
+      primaryClass={eess.IV},
+      url={https://arxiv.org/abs/2503.03778}, 
+}
+```
