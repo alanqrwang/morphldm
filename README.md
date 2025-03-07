@@ -1,5 +1,5 @@
 # MorphLDM
-MorphLDM is a 3D brain MRI generation method based on state-of-the-art latent diffusion models (LDMs) that generates novel images by applying synthesized deformation fields to a learned template.
+MorphLDM is a 3D brain MRI generation method based on state-of-the-art latent diffusion models (LDMs) that generates novel images by applying synthesized deformation fields to a learned template. [[link to paper](https://arxiv.org/abs/2503.03778)]
 
 ![samples](samples.png)
 
